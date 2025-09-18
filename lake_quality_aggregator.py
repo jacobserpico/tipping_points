@@ -10,9 +10,9 @@ import numpy as np
 import pandas as pd
 
 # File paths
-data_dir = Path("/Users/Jake/Desktop/Everything/Research/tipping_points/data")
-agg_path = data_dir / "aggregate_water_quality" / "aggregate_water_quality__1990-2024.csv"
-wp_path = data_dir / "Water_Parameters.csv"
+data_dir = Path("")
+agg_path = Path("")
+wp_path = Path("")
 
 # Helper functions
 def read_csv(path):
