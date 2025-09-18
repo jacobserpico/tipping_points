@@ -12,8 +12,8 @@ from matplotlib.dates import YearLocator, DateFormatter
 from numpy import RankWarning
 
 # File paths
-data_dir = Path("/Users/Jake/Desktop/Everything/Research/tipping_points/data")
-agg_path = Path("/Users/Jake/Desktop/Everything/Research/tipping_points/data/aggregate_water_quality/aggregate_water_quality__1990-2024__with_water_parameters.csv")
+data_dir = Path("")
+agg_path = Path("")
 
 fig_dir = Path("/Users/Jake/Desktop")
 fig_dir.mkdir(parents=True, exist_ok=True)
