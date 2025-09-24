@@ -12,26 +12,32 @@ from matplotlib.dates import YearLocator, DateFormatter
 from numpy import RankWarning
 
 # File paths
-data_dir = Path("")
-agg_path = Path("")
+data_dir = Path("/Users/Jake/Desktop/Everything/Research/tipping_points/data")
+agg_path = Path("/Users/Jake/Desktop/Everything/Research/tipping_points/data/aggregate_water_quality/aggregate_water_quality__1990-2024__with_water_parameters.csv")
 
 fig_dir = Path("/Users/Jake/Desktop")
 fig_dir.mkdir(parents=True, exist_ok=True)
 
 # Time specificaation
-start_year = 1990
-end_year = 2024
+start_year = 1992
+end_year = 2022
 
 # Variables of interest
 variables = {
-    "phosphorus": ["TDP", "TP"],
+    "phosphorus": [
+                   "TDP", # Performs well
+                #    "TP"
+                   ],
     "secchi_depth": ["TRANS"],
     "turbidity": ["TURB"],
-    "nitrogen": ["TDN", "TN"],
+    "nitrogen": [
+                "TDN", # Performs well
+                #  "TN"
+                 ],
     "temperature": ["TEMP"],
 }
 
-# Colors
+# Colors (all black for now)
 colors = {
     "phosphorus": "#000000",
     "secchi_depth": "#000000",
@@ -49,7 +55,7 @@ agg_freq_by_var = {
 # Aggregate by lake if available, else station, then take global median
 station_first = True
 
-# if True, group by lake (preferred) else by station
+# if True: group by lake, else: by station
 weight_by_lake = False
 min_years_per_station = 1
 surface_max_depth_m = None # 2.0
@@ -57,7 +63,7 @@ surface_max_depth_m = None # 2.0
 water_type_keep = None #["lake"]
 
 # Detrending
-detrend = False
+detrend = True
 detrend_per_station = False
 
 min_points_per_group = 3
@@ -178,17 +184,15 @@ def attach_entity_id(df):
         d["lake_id"] = d["gems_station_number"].astype(str).str.strip()
     return d
 
-
-def _entity_col(df):
+def entity_col(df):
     return "lake_id" if ("lake_id" in df.columns and df["lake_id"].notna().any()) else "gems_station_number"
-
 
 def monthwise_interpolate(df, per_entity=True, max_gap=2, require_min_obs=3, use_log=True):
     d = df.copy()
     d["year"] = d["sample_date"].dt.year
     d["month"] = d["sample_date"].dt.month
 
-    ent = _entity_col(d) if per_entity else None
+    ent = entity_col(d) if per_entity else None
     group_cols = ([ent] if ent else []) + ["year", "month"]
 
     # Collapse to one value per (entity, year, month)
@@ -269,7 +273,7 @@ def filter_common(df):
 def filter_by_station_years(df, min_years):
     if not min_years:
         return df
-    ent = _entity_col(df)
+    ent = entity_col(df)
     yrs = df.assign(_y=df["sample_date"].dt.year)
     keep_ids = (
         yrs.groupby(ent)["_y"]
@@ -299,7 +303,7 @@ def linear_residuals(x_year, y):
 def apply_detrend(df, freq="M", per_station=True):
     d = df.copy()
     d["year"] = d["sample_date"].dt.year
-    ent = _entity_col(d) if per_station else None
+    ent = entity_col(d) if per_station else None
 
     if freq == "M":
         d["month"] = d["sample_date"].dt.month
@@ -332,7 +336,7 @@ def aggregate_stats(df, freq="M", station_first=False):
 
     # When we aggregate first by entity
     if station_first:
-        ent = _entity_col(df)
+        ent = entity_col(df)
         g1 = df.groupby([df[ent], key])["value"].median()
         g = g1.groupby(level=1)
         out = pd.DataFrame({
@@ -365,7 +369,7 @@ def compute_counts(df, freq="M"):
         key = df["sample_date"].dt.to_period("Y").dt.to_timestamp()
     else:
         key = df["sample_date"].values.astype("datetime64[M]")
-    ent = _entity_col(df)
+    ent = entity_col(df)
     n_ent = df.groupby(key)[ent].nunique()
     n_sa = df.groupby(key)["value"].size()
     if freq == "Y":
@@ -391,7 +395,7 @@ def format_axes(ax):
     ax.set_xlabel("Year")
 
 def plot_series(ts, var_key, color, y_label_text, thr=None, freq="M", shade_residuals=False):
-    fig = plt.figure(figsize=(10, 5), dpi=600)
+    fig = plt.figure(figsize=(10, 6), dpi=600)
     ax = fig.add_subplot(111)
 
     # Inner quartile range lines
