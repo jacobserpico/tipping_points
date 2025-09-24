@@ -1,0 +1,161 @@
+"""
+Author: @ Jacob Serpico
+"""
+
+from pathlib import Path
+import numpy as np
+import pandas as pd
+import statsmodels.api as sm
+
+data_dir = Path("/Users/Jake/Desktop/Everything/Research/tipping_points/data")
+panel_dir = data_dir / "panels" / "lake_month_panel__1992-2022.csv"
+output_dir = data_dir / "analysis" / "gilarranz_replication"
+output_dir.mkdir(parents=True, exist_ok=True)
+metrics_dir = output_dir / "tsi_metrics__monthly.csv"
+tipping_count_dir = output_dir / "candidate_tipping__lake_summary.csv"
+output_summary_A = output_dir / "glm_tipping__noTSI_CV.csv"
+output_summary_B = output_dir / "glm_tipping__withTSI_CV.csv"
+
+preferred_radius = 3000
+
+# Helper functions
+def zscore(s):
+    s = pd.to_numeric(s, errors="coerce")
+    m = s.mean()
+    sd = s.std(ddof=1)
+    return (s-m)/sd if (np.isfinite(sd) and sd != 0) else pd.Series(np.nan, index=s.index)
+
+def ensure_prop_agri(df):
+    if "prop_agri" in df.columns:
+        return df
+    # pick nearest prop_agri_r*
+    radius_cols = [c for c in df.columns if c.startswith("prop_agri_r")]
+    if not radius_cols:
+        raise SystemExit("No prop_agri column(s) found in panel.")
+    pick = sorted(radius_cols, key=lambda s: abs(
+        int(s.split("r")[1]) - preferred_radius))[0]
+    df = df.copy()
+    df["prop_agri"] = pd.to_numeric(df[pick], errors="coerce")
+    return df
+
+panel = pd.read_csv(panel_dir, low_memory=False)
+panel = ensure_prop_agri(panel)
+panel["tnum"] = panel["year"].astype(int)*12 + panel["month"].astype(int)
+
+for c in ["TSI", "TEMP", "TEMP_ds", "prop_agri", "latitude", "longitude"]:
+    if c in panel.columns:
+        panel[c] = pd.to_numeric(panel[c], errors="coerce")
+
+if "TEMP_ds" not in panel.columns and "TEMP" in panel.columns:
+    t = panel.copy()
+    t["TEMP_ds"] = t["TEMP"] - t.groupby("month")["TEMP"].transform("mean")
+    panel["TEMP_ds"] = t["TEMP_ds"]
+
+tip = pd.read_csv(tipping_count_dir)
+tip["tipped"] = (tip["n_tp"] > 0).astype(int)
+y_df = tip[["lake_id", "tipped"]]
+
+met = pd.read_csv(metrics_dir)[["lake_id", "avg_TSI", "CV_resid"]]
+
+base = (panel.groupby("lake_id", as_index=False)
+        .agg(latitude=("latitude", "median"),
+             longitude=("longitude", "median"),
+             mean_prop_agri=("prop_agri", "mean")))
+
+def slope(y, x):
+    y = np.asarray(y, float)
+    x = np.asarray(x, float)
+    m = np.isfinite(x) & np.isfinite(y)
+    if m.sum() < 2:
+        return np.nan
+    X = np.column_stack([np.ones(m.sum()), x[m]])
+    b0, b1 = np.linalg.lstsq(X, y[m], rcond=None)[0]
+    return float(b1)
+
+def trend_with_min(d, ycol, tcol, prefer=60, min_ok=36):
+    y = pd.to_numeric(d[ycol], errors="coerce").to_numpy()
+    t = pd.to_numeric(d[tcol], errors="coerce").to_numpy()
+    m = np.isfinite(t) & np.isfinite(y)
+    if m.sum() < min_ok:
+        return np.nan
+    return slope(y[m], t[m])
+
+ag_trend = (panel.groupby("lake_id", as_index=False)
+            .apply(lambda d: pd.Series({"agri_trend5y": trend_with_min(d, "prop_agri", "tnum", prefer=60, min_ok=36)}),
+                   include_groups=False)
+            .reset_index(drop=True))
+
+temp_mean = (panel.groupby("lake_id", as_index=False)
+             .agg(temp_resid_mean=("TEMP_ds", "mean")))
+temp_trend = (panel.groupby("lake_id", as_index=False)
+              .apply(lambda d: pd.Series({"temp_resid_trend_all": slope(pd.to_numeric(d["TEMP_ds"], errors="coerce").values,
+                                                                        d["tnum"].values)}),
+                     include_groups=False)
+              .reset_index(drop=True))
+
+X0 = (base.merge(ag_trend, on="lake_id", how="left")
+          .merge(temp_mean, on="lake_id", how="left")
+          .merge(temp_trend, on="lake_id", how="left")
+          .merge(y_df, on="lake_id", how="left")
+          .merge(met, on="lake_id", how="left"))
+
+X0["tipped"] = X0["tipped"].fillna(0).astype(int)
+
+for c in ["mean_prop_agri", "agri_trend5y", "temp_resid_mean", "temp_resid_trend_all",
+          "latitude", "longitude", "avg_TSI", "CV_resid"]:
+    if c in X0.columns:
+        X0[c+"_z"] = zscore(X0[c])
+
+def fit_binom(df, cols, label):
+    d = df.copy()
+    keep = d[cols+["tipped"]].replace([np.inf, -np.inf], np.nan).dropna()
+    if keep.empty:
+        return pd.DataFrame()
+    y = keep["tipped"].astype(int).values
+    X = sm.add_constant(keep[cols], has_constant="add")
+    res = sm.GLM(y, X, family=sm.families.Binomial()).fit(cov_type="HC1")
+    coefs = res.params
+    ses = res.bse
+    out = pd.DataFrame({
+        "model": label,
+        "term": coefs.index,
+        "odds_ratio": np.exp(coefs.values),
+        "or_95lo": np.exp(coefs.values - 1.96*ses.values),
+        "or_95hi": np.exp(coefs.values + 1.96*ses.values),
+        "p_value": res.pvalues.values
+    })
+    return out
+
+cols_A = [c for c in ["mean_prop_agri_z", "agri_trend5y_z", "temp_resid_mean_z", "temp_resid_trend_all_z",
+                      "latitude_z", "longitude_z"] if c in X0.columns]
+outA = fit_binom(X0, cols_A, "A_no_TSI_CV")
+outA.to_csv(output_summary_A, index=False)
+
+cols_B = cols_A + [c for c in ["avg_TSI_z", "CV_resid_z"] if c in X0.columns]
+outB = fit_binom(X0, cols_B, "B_with_TSI_CV")
+outB.to_csv(output_summary_B, index=False)
+
+print(f"Wrote: {output_summary_A}")
+print(f"Wrote: {output_summary_B}")
+print("Diagnostics:")
+print("Lakes in GLM table:", X0.shape[0])
+
+def show_sig(df, label):
+    if df is None or df.empty:
+        print(f"  {label}: no rows")
+        return
+    d = df[~df["term"].str.contains("const", case=False, na=False)].copy()
+    d = d.sort_values("p_value")
+    sig = d[d["p_value"] < 0.05]
+    print(f"{label}: significant terms (p<0.05): {len(sig)}")
+    if len(sig):
+        print(sig[["term", "odds_ratio", "or_95lo", "or_95hi", "p_value"]].head(
+            8).to_string(index=False))
+    focus = d[d["term"].isin(["mean_prop_agri_z", "agri_trend5y_z",
+                             "temp_resid_mean_z", "temp_resid_trend_all_z", "avg_TSI_z", "CV_resid_z"])]
+    if len(focus):
+        print(f"  {label}: key terms:")
+        print(focus.to_string(index=False))
+
+show_sig(outA, "Model A")
+show_sig(outB, "Model B")
